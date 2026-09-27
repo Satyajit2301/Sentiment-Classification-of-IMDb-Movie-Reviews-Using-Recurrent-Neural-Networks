@@ -17,12 +17,11 @@ Deployment notes
 
 import os
 import re
+import json
 
 import numpy as np
 import streamlit as st
-from tensorflow.keras.datasets import imdb
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.sequence import pad_sequences
+import onnxruntime as ort
 
 # ------------------------------------------------------------------
 # Constants — must match the training notebook (Block 1)
@@ -205,24 +204,43 @@ st.markdown(
 # ------------------------------------------------------------------
 @st.cache_resource(show_spinner="Loading trained model...")
 def get_model():
-    for path in MODEL_PATHS:
+    # Look for the ONNX model instead of keras
+    onnx_paths = ["best_model.onnx", "models/best_model.onnx", "model/best_model.onnx"]
+    for path in onnx_paths:
         if os.path.exists(path):
-            return load_model(path), path
-    return None, None
+            session = ort.InferenceSession(path)
+            input_name = session.get_inputs()[0].name
+            return session, input_name, path
+    return None, None, None
 
 
 @st.cache_resource(show_spinner="Loading IMDb vocabulary...")
 def get_word_index():
-    raw = imdb.get_word_index()
+    with open("imdb_word_index.json", "r") as f:
+        raw = json.load(f)
     return {word: rank + INDEX_FROM for word, rank in raw.items()}
 
 
-model, model_path = get_model()
+session, input_name, model_path = get_model()
 word_index = get_word_index()
 
 # ------------------------------------------------------------------
-# Preprocessing — mirrors tensorflow.keras.datasets.imdb encoding
+# Preprocessing — custom pad_sequences
 # ------------------------------------------------------------------
+def pad_sequences_custom(seq, maxlen, padding="post", truncating="post", value=0):
+    if len(seq) > maxlen:
+        if truncating == "pre":
+            seq = seq[-maxlen:]
+        else:
+            seq = seq[:maxlen]
+    elif len(seq) < maxlen:
+        pad = [value] * (maxlen - len(seq))
+        if padding == "pre":
+            seq = pad + seq
+        else:
+            seq = seq + pad
+    return np.array([seq], dtype=np.float32)
+
 def clean_and_tokenize(text: str):
     text = text.lower()
     text = re.sub(r"<br\s*/?>", " ", text)
@@ -241,8 +259,11 @@ def encode_review(text: str):
 
 def predict_sentiment(text: str):
     seq = encode_review(text)
-    padded = pad_sequences([seq], maxlen=MAX_LEN, padding="post", truncating="post")
-    prob = float(model.predict(padded, verbose=0)[0][0])
+    padded = pad_sequences_custom(seq, maxlen=MAX_LEN, padding="post", truncating="post")
+    
+    # ONNX inference
+    prob = float(session.run(None, {input_name: padded})[0][0][0])
+    
     label = "Positive" if prob >= 0.5 else "Negative"
     confidence = prob if prob >= 0.5 else 1 - prob
     return label, prob, confidence
@@ -281,9 +302,9 @@ if analyze_clicked:
     text = st.session_state.review_text.strip()
     if not text:
         st.warning("Please write a review before analyzing.")
-    elif model is None:
+    elif session is None:
         st.error(
-            "Couldn't find a trained model file. Place `best_model.keras` "
+            "Couldn't find a trained ONNX model file. Place `best_model.onnx` "
             f"in the app folder (checked: {', '.join(MODEL_PATHS)})."
         )
     else:
@@ -336,10 +357,9 @@ if analyze_clicked:
 # About / footer
 # ------------------------------------------------------------------
 with st.expander("ℹ️ About this model"):
-    if model is not None:
-        st.write(f"**Architecture:** `{model.name}`")
-        st.write(f"**Trainable parameters:** {model.count_params():,}")
+    if session is not None:
         st.write(f"**Loaded from:** `{model_path}`")
+        st.write("**Runtime:** ONNX Runtime")
     st.write(
         "Trained on the Keras IMDb dataset (50,000 labeled reviews) using "
         "a vocabulary of the top 10,000 words and sequences padded/truncated "
