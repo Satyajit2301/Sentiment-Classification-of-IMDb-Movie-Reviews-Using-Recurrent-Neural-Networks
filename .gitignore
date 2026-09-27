@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+venv/
+.env/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Extracted outputs (not needed in repo)
+extracted_outputs/
+
+# PDFs (assignment docs, not needed)
+*.pdf
+
+# ZIP files
+*.zip
